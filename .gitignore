@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Data and model outputs
+data/
+outputs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# System/editor
+.DS_Store
+.vscode/

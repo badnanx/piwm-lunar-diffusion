@@ -188,3 +188,33 @@ medium-extractor-visible:
 >  --max_test_files 10 \
 >  --patience 3 \
 >  --seed 42
+
+.PHONY: export-latents-debug train-correction-debug eval-correction-debug
+
+export-latents-debug:
+>PYTHONPATH=$(PYTHONPATH) python scripts/export_latent_transitions.py \
+>  --data_dir $(TEST_DIR) \
+>  --checkpoint outputs/piwm_pair_debug_physstrong/best.pt \
+>  --output_path outputs/piwm_pair_debug_physstrong/latent_transitions_test.npz \
+>  --state_key states \
+>  --latent_dim 64 \
+>  --batch_size 64
+
+train-correction-debug:
+>PYTHONPATH=$(PYTHONPATH) python scripts/train_latent_correction.py \
+>  --latent_npz outputs/piwm_pair_debug_physstrong/latent_transitions_test.npz \
+>  --output_dir outputs/latent_correction_debug \
+>  --latent_dim 64 \
+>  --hidden_dim 256 \
+>  --batch_size 128 \
+>  --epochs 20 \
+>  --patience 5 \
+>  --seed 42
+
+eval-correction-debug:
+>PYTHONPATH=$(PYTHONPATH) python scripts/eval_latent_correction.py \
+>  --latent_npz outputs/piwm_pair_debug_physstrong/latent_transitions_test.npz \
+>  --checkpoint outputs/latent_correction_debug/best.pt \
+>  --output_path outputs/latent_correction_debug/eval_metrics.json \
+>  --latent_dim 64 \
+>  --hidden_dim 256

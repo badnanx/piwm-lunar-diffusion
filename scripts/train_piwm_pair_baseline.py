@@ -23,7 +23,7 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
-def save_prediction_grid(img_t, img_next, recon_t, recon_next, pred_next, save_path, num_images=6):
+def save_prediction_grid(img_t, img_next, recon_t, recon_next, pred_next, save_path, num_images=6, title=None):
     img_t = img_t[:num_images].detach().cpu()
     img_next = img_next[:num_images].detach().cpu()
     recon_t = recon_t[:num_images].detach().cpu()
@@ -38,19 +38,38 @@ def save_prediction_grid(img_t, img_next, recon_t, recon_next, pred_next, save_p
         ("pred t+1", pred_next),
     ]
 
-    fig, axes = plt.subplots(len(rows), num_images, figsize=(2 * num_images, 2 * len(rows)))
+    # Extra first column is reserved for large row labels.
+    fig, axes = plt.subplots(
+        len(rows),
+        num_images + 1,
+        figsize=(2 * (num_images + 1), 2 * len(rows)),
+        gridspec_kw={"width_ratios": [0.9] + [1.0] * num_images},
+    )
 
     for r, (label, imgs) in enumerate(rows):
-        for c in range(num_images):
-            axes[r, c].imshow(imgs[c].permute(1, 2, 0))
-            axes[r, c].axis("off")
-            if c == 0:
-                axes[r, c].set_ylabel(label, fontsize=10)
+        label_ax = axes[r, 0]
+        label_ax.axis("off")
+        label_ax.text(
+            0.5,
+            0.5,
+            label,
+            ha="center",
+            va="center",
+            fontsize=14,
+            fontweight="bold",
+        )
 
-    plt.tight_layout()
+        for c in range(num_images):
+            ax = axes[r, c + 1]
+            ax.imshow(imgs[c].permute(1, 2, 0).clamp(0, 1))
+            ax.axis("off")
+
+    if title is not None:
+        fig.suptitle(title, fontsize=16, fontweight="bold")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96] if title is not None else None)
     plt.savefig(save_path, dpi=150)
     plt.close(fig)
-
 
 def select_state(states, state_indices):
     return states[:, state_indices]
@@ -414,6 +433,7 @@ def main():
             recon_next=outputs["recon_next"],
             pred_next=outputs["pred_img_next"],
             save_path=grid_path,
+            title=f"PIWM pair predictions — epoch {epoch}",
         )
         print("saved:", grid_path)
 

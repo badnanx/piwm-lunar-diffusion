@@ -5,27 +5,23 @@ import torch.nn.functional as F
 
 class ConvVAE(nn.Module):
     """
-    Small convolutional VAE for Lunar Lander images.
+    Convolutional VAE for Lunar Lander images.
 
-    Input image shape:
-        (B, 3, 100, 150)
+    PIWM Principle 1-style latent structure:
+      - first k latent dimensions can be supervised as physical variables
+      - remaining dimensions act as residual visual latent dimensions
 
-    Latent shape:
-        (B, latent_dim)
-
-    Output reconstruction shape:
-        (B, 3, 100, 150)
-
-    PIWM-style idea:
-        Some dimensions of mu can be supervised to match selected
-        physical state variables, e.g. x, y, theta.
+    Example with state_indices = [0, 1, 4]:
+      mu[:, 0] ≈ x
+      mu[:, 1] ≈ y
+      mu[:, 2] ≈ theta
+      mu[:, 3:] = residual latent
     """
 
     def __init__(self, latent_dim: int = 64):
         super().__init__()
         self.latent_dim = latent_dim
 
-        # Encoder: image -> compressed feature map
         self.encoder_conv = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=4, stride=2, padding=1),     # 100x150 -> 50x75
             nn.ReLU(),
@@ -39,11 +35,9 @@ class ConvVAE(nn.Module):
 
         self.feature_dim = 256 * 6 * 9
 
-        # VAE latent distribution parameters
         self.fc_mu = nn.Linear(self.feature_dim, latent_dim)
         self.fc_logvar = nn.Linear(self.feature_dim, latent_dim)
 
-        # Decoder: latent -> reconstructed image
         self.fc_decode = nn.Linear(latent_dim, self.feature_dim)
 
         self.decoder_conv = nn.Sequential(
@@ -73,8 +67,6 @@ class ConvVAE(nn.Module):
         h = self.fc_decode(z)
         h = h.reshape(z.size(0), 256, 6, 9)
         recon = self.decoder_conv(h)
-
-        # Decoder naturally gives 96x144, so resize back to 100x150.
         recon = F.interpolate(recon, size=(100, 150), mode="bilinear", align_corners=False)
         return recon
 
@@ -83,6 +75,13 @@ class ConvVAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         recon = self.decode(z)
         return recon, mu, logvar
+
+
+def kl_divergence(mu, logvar):
+    """
+    Average KL divergence for a diagonal Gaussian latent.
+    """
+    return -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
 
 
 def vae_loss(
@@ -94,47 +93,50 @@ def vae_loss(
     state_indices=None,
     kl_weight: float = 1e-4,
     state_weight: float = 0.0,
+    kl_on_physical: bool = False,
 ):
     """
-    VAE loss.
+    PIWM-style VAE loss.
 
     recon_loss:
-        Makes reconstructed image look like input image.
-
-    kl_loss:
-        Keeps the latent distribution close to standard normal.
+      Pixel MSE reconstruction loss.
 
     state_loss:
-        PIWM-style supervision. Forces the first k dimensions of mu
-        to match selected physical state variables.
+      Supervise first k dimensions of mu to match selected physical state variables.
 
-        Example:
-            state_indices = [0, 1, 4]
-
-        Then:
-            mu[:, 0] -> x
-            mu[:, 1] -> y
-            mu[:, 2] -> theta
+    kl_loss:
+      By default, apply KL only to residual latent dimensions mu[:, k:],
+      matching the 4P PIWM Principle 1 separate-latent idea.
     """
     recon_loss = F.mse_loss(recon, x, reduction="mean")
-
-    kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
 
     if states is not None and state_weight > 0.0:
         if state_indices is None:
             raise ValueError("state_indices must be provided when state_weight > 0.")
 
-        if len(state_indices) > mu.size(1):
-            raise ValueError(
-                f"Need at least {len(state_indices)} latent dimensions, "
-                f"but latent_dim is {mu.size(1)}."
-            )
+        k = len(state_indices)
+
+        if k > mu.size(1):
+            raise ValueError(f"Need {k} latent dims, but latent_dim is {mu.size(1)}.")
 
         target_state = states[:, state_indices]
-        predicted_state = mu[:, : len(state_indices)]
+        predicted_state = mu[:, :k]
         state_loss = F.mse_loss(predicted_state, target_state, reduction="mean")
     else:
+        k = 0
         state_loss = torch.zeros((), device=x.device)
+
+    if kl_on_physical or k == 0:
+        kl_mu = mu
+        kl_logvar = logvar
+    else:
+        kl_mu = mu[:, k:]
+        kl_logvar = logvar[:, k:]
+
+    if kl_mu.numel() == 0:
+        kl_loss = torch.zeros((), device=x.device)
+    else:
+        kl_loss = kl_divergence(kl_mu, kl_logvar)
 
     total_loss = recon_loss + kl_weight * kl_loss + state_weight * state_loss
 

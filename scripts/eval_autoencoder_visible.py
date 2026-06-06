@@ -2,6 +2,7 @@ import argparse
 import glob
 import math
 import os
+import random
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,7 +11,6 @@ import torch
 from lunar_diffusion.autoencoder import ConvVAE
 
 
-# Renderer constants, copied from the Slack renderer.
 SCALE = 30.0
 VIEWPORT_W = 600
 VIEWPORT_H = 400
@@ -104,30 +104,45 @@ def is_fully_visible(state, img_h=100, img_w=150, margin=0):
     )
 
 
-def collect_visible_examples(data_dir, num_images):
+def collect_visible_examples(data_dir, num_images, seed=42, margin=0):
+    rng = random.Random(seed)
     files = sorted(glob.glob(os.path.join(data_dir, "*.npz")))
 
-    examples = []
+    visible_refs = []
 
     for path in files:
         with np.load(path) as data:
-            imgs = data["imgs"]
             states = data["states"]
 
-            for frame_idx in range(len(imgs)):
+            for frame_idx in range(len(states)):
                 state = states[frame_idx]
-                if is_fully_visible(state):
-                    examples.append(
-                        {
-                            "img": imgs[frame_idx],
-                            "state": state,
-                            "file": os.path.basename(path),
-                            "frame_idx": frame_idx,
-                        }
-                    )
+                if is_fully_visible(state, margin=margin):
+                    visible_refs.append((path, frame_idx))
 
-                if len(examples) >= num_images:
-                    return examples
+    print(f"found {len(visible_refs)} fully visible frames")
+
+    if len(visible_refs) == 0:
+        return []
+
+    if len(visible_refs) > num_images:
+        selected_refs = rng.sample(visible_refs, num_images)
+    else:
+        selected_refs = visible_refs
+
+    examples = []
+    for path, frame_idx in selected_refs:
+        with np.load(path) as data:
+            img = data["imgs"][frame_idx]
+            state = data["states"][frame_idx]
+
+        examples.append(
+            {
+                "img": img,
+                "state": state,
+                "file": os.path.basename(path),
+                "frame_idx": frame_idx,
+            }
+        )
 
     return examples
 
@@ -142,13 +157,19 @@ def save_grid(examples, recon, save_path):
         recon_img = recon[i].detach().cpu().permute(1, 2, 0).numpy()
         recon_img = np.clip(recon_img, 0.0, 1.0)
 
+        state = ex["state"]
+        title = (
+            f"{ex['file']}:{ex['frame_idx']}\n"
+            f"x={state[0]:.2f}, y={state[1]:.2f}, th={state[4]:.2f}"
+        )
+
         axes[0, i].imshow(real_img)
         axes[0, i].axis("off")
-        axes[0, i].set_title(f"real\n{ex['file']}:{ex['frame_idx']}")
+        axes[0, i].set_title(title, fontsize=7)
 
         axes[1, i].imshow(recon_img)
         axes[1, i].axis("off")
-        axes[1, i].set_title("recon")
+        axes[1, i].set_title("recon", fontsize=8)
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150)
@@ -162,6 +183,8 @@ def main():
     parser.add_argument("--output_path", default="outputs/visible_recon_grid.png")
     parser.add_argument("--num_images", type=int, default=12)
     parser.add_argument("--latent_dim", type=int, default=64)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--margin", type=int, default=0)
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
@@ -175,7 +198,12 @@ def main():
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    examples = collect_visible_examples(args.data_dir, args.num_images)
+    examples = collect_visible_examples(
+        args.data_dir,
+        args.num_images,
+        seed=args.seed,
+        margin=args.margin,
+    )
     print(f"collected {len(examples)} visible examples")
 
     if len(examples) == 0:

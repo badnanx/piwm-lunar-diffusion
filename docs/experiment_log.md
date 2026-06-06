@@ -1,68 +1,173 @@
 # Experiment Log
 
-This log records important runs, observations, and decisions for the Lunar PIWM diffusion project.
+This file records what we tried, what we learned, and what to investigate next.
 
-## Format
+## 1. Single-frame VAE experiments
 
-Each experiment should include:
+We first trained a basic ConvVAE on Lunar Lander frames.
 
-- Date:
-- Git commit:
-- Command/config:
-- Goal:
-- Dataset:
-- Key settings:
-- Results:
-- Visual observations:
-- Decision / next step:
+Observation:
+  reconstructions learned black sky, terrain, and some flag poles
+  lander was missing or extremely blurry
 
----
+Interpretation:
+  full-image pixel MSE is dominated by background and terrain
+  the lander is small and easy for the model to ignore
+  single-frame VAE reconstruction is not enough for physically meaningful prediction
 
-## 2026-06-06 — Initial VAE and PIWM setup
+## 2. State-supervised latent VAE
 
-### Goal
+We added state supervision to the first latent dimensions.
 
-Build a standalone Lunar Lander repo, inspect the dataset, train initial VAE baselines, and move toward a PIWM-style latent baseline before adding diffusion.
+Tried:
+  all state variables
+  selected visible-ish variables such as x, y, theta
 
-### Dataset observations
+Observation:
+  reconstruction improved but still struggled with lander
+  velocity from a single frame is questionable
 
-- Train split: 345 `.npz` files, 30,776 frames.
-- Test split: 55 `.npz` files, 4,928 frames.
-- Each file contains:
-  - `imgs`
-  - `acts`
-  - `states`
-  - `noisy_states_2`
-  - `noisy_states_5`
-  - `noisy_states_10`
+Interpretation:
+  physical supervision helps, but a single-frame setup is incomplete for dynamics.
 
-### Visibility analysis
+## 3. Paired PIWM baseline
 
-Using renderer geometry:
+We built LunarPairDataset:
 
-- Fully visible 2D lander: about 69.06%.
-- Any clipped: about 30.94%.
-- Partial top clipping: about 25.31%.
-- Fully above frame: about 5.01%.
-- Horizontal clipping was negligible.
+  image_t
+  image_next
+  state_t
+  state_next
+  action_t
 
-This explains why early visualization grids often showed the lander near or above the top edge.
+We trained:
 
-### VAE observations
+  encoder(image_t) -> mu_t
+  dynamics(mu_t, action_t) -> pred_mu_next
+  decoder(pred_mu_next) -> pred image_next
 
-Plain VAE and P1-style VAE reconstructed background/terrain/flag poles but failed to reconstruct the tiny moving lander.
+Loss terms:
+  recon_loss
+  kl_loss
+  p1_loss
+  p2_loss
+  dynamics_loss
+  pred_recon_loss
 
-Likely reason:
+The serious run was:
 
-- Pixel MSE is dominated by sky/ground/background.
-- The lander is small, moving, rotating, and sometimes clipped.
+  outputs/piwm_pair_physstrong_v1
 
-### Decision
+Best epoch:
+  9
 
-Stop iterating on single-frame VAE-only tweaks. Move toward a fuller PIWM baseline:
+Evaluation:
+  p1_t_rmse: 0.234198
+  p1_next_rmse: 0.243476
+  dynamics_state_rmse: 0.238846
+  dynamics_latent_rmse: 0.080708
+  p2_rmse: 0.063492
 
-- Pair dataset with consecutive frames.
-- P1 structured latent.
-- P2 transition consistency.
-- Dynamics model.
-- Later P3/P4 and diffusion correction.
+Observation:
+  lander appears in recon/pred images, but is blurry
+  terrain shape is captured, but edges are soft
+  test losses are much worse than train losses
+
+Interpretation:
+  paired PIWM is much better than single-frame VAE
+  model overfits
+  physical latent generalization is imperfect
+  pixel reconstruction is still not object-aware enough
+
+## 4. P3/noisy supervision smoke test
+
+We added state_key support.
+
+Tested:
+  states
+  noisy_states_2
+
+Observation:
+  noisy supervision did not catastrophically break the model
+  evaluation against clean states was still reasonable in debug
+  p2 against noisy labels looked worse because noisy deltas are noisy
+
+Interpretation:
+  P3 support exists, but systematic P3 experiments are future work.
+
+## 5. State extractor / P4 checker
+
+We trained a CNN:
+
+  image -> x,y,theta
+
+Observation:
+  x,y are learnable from real images
+  theta remains difficult
+  visible-only filtering did not fix theta
+
+Interpretation:
+  image-to-position is feasible
+  theta is hard because the lander is small/blurry
+  a checker should start with x,y before theta
+
+## 6. Latent correction baseline
+
+We exported latent transitions:
+
+  z_t
+  z_next
+  z_pred_next
+  correction = z_next - z_pred_next
+
+Debug correction on same latent file:
+  baseline_rmse: 0.034124
+  corrected_rmse: 0.005798
+  improvement_ratio: 5.886x
+
+Proper train/test correction:
+  test baseline_rmse: 0.060517
+  test corrected_rmse: 0.055764
+  improvement_ratio: 1.085x
+
+Interpretation:
+  correction is learnable on same distribution
+  generalization to test is modest
+  diffusion will need to beat this simple MLP correction baseline
+
+## 7. Current visual issue
+
+Current best paired PIWM images:
+  lander present but blurry
+  terrain shape plausible but soft
+  sky/background very good
+
+Likely causes:
+  global MSE underweights small lander
+  MSE encourages averaging
+  decoder smooths high-frequency edges
+  physical latent is useful but image generation is not object-aware
+
+## 8. Next planned experiment
+
+P4-lite crop loss.
+
+Idea:
+  keep global image reconstruction
+  add extra crop reconstruction around lander x,y
+
+Why:
+  lander is physically important but small
+  crop loss is a simple approximation of P4 output partitioning
+  easier than SAM masks and multiple decoders
+
+Experiment:
+  baseline: outputs/piwm_pair_physstrong_v1
+  new: outputs/piwm_pair_crop_*
+
+Compare:
+  visual grids
+  crop_loss
+  pred_crop_loss
+  p1/dynamics RMSE
+  per-dimension RMSE

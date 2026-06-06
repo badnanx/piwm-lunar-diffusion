@@ -218,3 +218,9 @@ eval-correction-debug:
 >  --output_path outputs/latent_correction_debug/eval_metrics.json \
 >  --latent_dim 64 \
 >  --hidden_dim 256
+
+.PHONY: summarize-piwm-v1
+
+summarize-piwm-v1:
+PYTHONPATH=$(PYTHONPATH) python scripts/summarize_piwm_eval.py \
+  --metrics outputs/piwm_pair_physstrong_v1/eval_metrics.json

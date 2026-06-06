@@ -222,5 +222,5 @@ eval-correction-debug:
 .PHONY: summarize-piwm-v1
 
 summarize-piwm-v1:
-PYTHONPATH=$(PYTHONPATH) python scripts/summarize_piwm_eval.py \
-  --metrics outputs/piwm_pair_physstrong_v1/eval_metrics.json
+>PYTHONPATH=$(PYTHONPATH) python scripts/summarize_piwm_eval.py \
+>  --metrics outputs/piwm_pair_physstrong_v1/eval_metrics.json

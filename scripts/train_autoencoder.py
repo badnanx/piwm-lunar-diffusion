@@ -1,13 +1,22 @@
 import argparse
 import os
+import random
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from lunar_diffusion.dataset import LunarFrameDataset
 from lunar_diffusion.autoencoder import ConvVAE, vae_loss
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def save_reconstruction_grid(images, recon, save_path, num_images=8):
@@ -26,27 +35,47 @@ def save_reconstruction_grid(images, recon, save_path, num_images=8):
         axes[1, i].set_title("recon")
 
     plt.tight_layout()
-    plt.savefig(save_path)
+    plt.savefig(save_path, dpi=150)
     plt.close(fig)
 
 
-def run_epoch(model, loader, optimizer, device, kl_weight, train=True):
+def run_epoch(
+    model,
+    loader,
+    optimizer,
+    device,
+    kl_weight,
+    state_weight,
+    state_indices,
+    train=True,
+):
     if train:
         model.train()
+        desc = "train"
     else:
         model.eval()
+        desc = "test"
 
     total_loss = 0.0
     total_recon = 0.0
     total_kl = 0.0
+    total_state = 0.0
 
-    for images, states in tqdm(loader, leave=False):
+    for images, states in tqdm(loader, desc=desc, leave=False):
         images = images.to(device)
+        states = states.to(device)
 
         with torch.set_grad_enabled(train):
             recon, mu, logvar = model(images)
-            loss, recon_loss, kl_loss = vae_loss(
-                recon, images, mu, logvar, kl_weight=kl_weight
+            loss, recon_loss, kl_loss, state_loss = vae_loss(
+                recon,
+                images,
+                mu,
+                logvar,
+                states=states,
+                state_indices=state_indices,
+                kl_weight=kl_weight,
+                state_weight=state_weight,
             )
 
             if train:
@@ -58,12 +87,14 @@ def run_epoch(model, loader, optimizer, device, kl_weight, train=True):
         total_loss += loss.item() * batch_size
         total_recon += recon_loss.item() * batch_size
         total_kl += kl_loss.item() * batch_size
+        total_state += state_loss.item() * batch_size
 
     n = len(loader.dataset)
     return {
         "loss": total_loss / n,
         "recon_loss": total_recon / n,
         "kl_loss": total_kl / n,
+        "state_loss": total_state / n,
     }
 
 
@@ -77,14 +108,31 @@ def main():
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--kl_weight", type=float, default=1e-4)
+    parser.add_argument("--state_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--state_indices",
+        type=int,
+        nargs="+",
+        default=[0, 1, 4],
+        help="State indices to supervise in mu. Default: 0 1 4 = x y theta.",
+    )
     parser.add_argument("--max_train_files", type=int, default=None)
     parser.add_argument("--max_test_files", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    if args.state_weight > 0 and len(args.state_indices) > args.latent_dim:
+        raise ValueError("Number of state indices cannot exceed latent_dim.")
+
+    set_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("device:", device)
+    print("state_weight:", args.state_weight)
+    print("state_indices:", args.state_indices)
+    print("kl_weight:", args.kl_weight)
+    print("seed:", args.seed)
 
     train_dataset = LunarFrameDataset(
         args.train_dir,
@@ -110,6 +158,15 @@ def main():
         num_workers=0,
     )
 
+    # Separate shuffled loader only for visualization,
+    # so we do not always show the first test batch.
+    viz_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=0,
+    )
+
     model = ConvVAE(latent_dim=args.latent_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -119,18 +176,31 @@ def main():
         print(f"\nEpoch {epoch}/{args.epochs}")
 
         train_metrics = run_epoch(
-            model, train_loader, optimizer, device, args.kl_weight, train=True
+            model,
+            train_loader,
+            optimizer,
+            device,
+            args.kl_weight,
+            args.state_weight,
+            args.state_indices,
+            train=True,
         )
         test_metrics = run_epoch(
-            model, test_loader, optimizer, device, args.kl_weight, train=False
+            model,
+            test_loader,
+            optimizer,
+            device,
+            args.kl_weight,
+            args.state_weight,
+            args.state_indices,
+            train=False,
         )
 
         print("train:", train_metrics)
         print("test: ", test_metrics)
 
-        # Save a reconstruction grid from one test batch.
         model.eval()
-        images, _ = next(iter(test_loader))
+        images, _ = next(iter(viz_loader))
         images = images.to(device)
         with torch.no_grad():
             recon, _, _ = model(images)
@@ -139,7 +209,6 @@ def main():
         save_reconstruction_grid(images, recon, grid_path)
         print("saved:", grid_path)
 
-        # Save latest checkpoint.
         latest_path = os.path.join(args.output_dir, "latest.pt")
         torch.save(
             {
@@ -152,7 +221,6 @@ def main():
             latest_path,
         )
 
-        # Save best checkpoint.
         if test_metrics["loss"] < best_test_loss:
             best_test_loss = test_metrics["loss"]
             best_path = os.path.join(args.output_dir, "best.pt")

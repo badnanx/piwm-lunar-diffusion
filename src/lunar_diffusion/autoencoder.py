@@ -15,6 +15,10 @@ class ConvVAE(nn.Module):
 
     Output reconstruction shape:
         (B, 3, 100, 150)
+
+    PIWM-style idea:
+        Some dimensions of mu can be supervised to match selected
+        physical state variables, e.g. x, y, theta.
     """
 
     def __init__(self, latent_dim: int = 64):
@@ -23,13 +27,13 @@ class ConvVAE(nn.Module):
 
         # Encoder: image -> compressed feature map
         self.encoder_conv = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=4, stride=2, padding=1),   # 100x150 -> 50x75
+            nn.Conv2d(3, 32, kernel_size=4, stride=2, padding=1),     # 100x150 -> 50x75
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),  # 50x75 -> 25x37
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),    # 50x75 -> 25x37
             nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1), # 25x37 -> 12x18
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),   # 25x37 -> 12x18
             nn.ReLU(),
-            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),# 12x18 -> 6x9
+            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),  # 12x18 -> 6x9
             nn.ReLU(),
         )
 
@@ -43,13 +47,13 @@ class ConvVAE(nn.Module):
         self.fc_decode = nn.Linear(latent_dim, self.feature_dim)
 
         self.decoder_conv = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1), # 6x9 -> 12x18
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),  # 6x9 -> 12x18
             nn.ReLU(),
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),  # 12x18 -> 24x36
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),   # 12x18 -> 24x36
             nn.ReLU(),
-            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),   # 24x36 -> 48x72
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),    # 24x36 -> 48x72
             nn.ReLU(),
-            nn.ConvTranspose2d(32, 3, kernel_size=4, stride=2, padding=1),    # 48x72 -> 96x144
+            nn.ConvTranspose2d(32, 3, kernel_size=4, stride=2, padding=1),     # 48x72 -> 96x144
             nn.Sigmoid(),
         )
 
@@ -81,11 +85,57 @@ class ConvVAE(nn.Module):
         return recon, mu, logvar
 
 
-def vae_loss(recon, x, mu, logvar, kl_weight: float = 1e-4):
+def vae_loss(
+    recon,
+    x,
+    mu,
+    logvar,
+    states=None,
+    state_indices=None,
+    kl_weight: float = 1e-4,
+    state_weight: float = 0.0,
+):
+    """
+    VAE loss.
+
+    recon_loss:
+        Makes reconstructed image look like input image.
+
+    kl_loss:
+        Keeps the latent distribution close to standard normal.
+
+    state_loss:
+        PIWM-style supervision. Forces the first k dimensions of mu
+        to match selected physical state variables.
+
+        Example:
+            state_indices = [0, 1, 4]
+
+        Then:
+            mu[:, 0] -> x
+            mu[:, 1] -> y
+            mu[:, 2] -> theta
+    """
     recon_loss = F.mse_loss(recon, x, reduction="mean")
 
-    # KL loss encourages the latent distribution to stay near N(0, I).
     kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
 
-    total_loss = recon_loss + kl_weight * kl_loss
-    return total_loss, recon_loss, kl_loss
+    if states is not None and state_weight > 0.0:
+        if state_indices is None:
+            raise ValueError("state_indices must be provided when state_weight > 0.")
+
+        if len(state_indices) > mu.size(1):
+            raise ValueError(
+                f"Need at least {len(state_indices)} latent dimensions, "
+                f"but latent_dim is {mu.size(1)}."
+            )
+
+        target_state = states[:, state_indices]
+        predicted_state = mu[:, : len(state_indices)]
+        state_loss = F.mse_loss(predicted_state, target_state, reduction="mean")
+    else:
+        state_loss = torch.zeros((), device=x.device)
+
+    total_loss = recon_loss + kl_weight * kl_loss + state_weight * state_loss
+
+    return total_loss, recon_loss, kl_loss, state_loss

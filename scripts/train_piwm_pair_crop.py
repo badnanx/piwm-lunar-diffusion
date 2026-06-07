@@ -2,9 +2,11 @@ import argparse
 import json
 import os
 import random
+import shutil
 import time
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -12,7 +14,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from lunar_diffusion.autoencoder import ConvVAE, kl_divergence
-from lunar_diffusion.crop_loss import state_guided_crop_mse
+from lunar_diffusion.crop_loss import state_guided_crop_loss, state_xy_to_pixel
 from lunar_diffusion.dynamics import LatentDynamicsMLP
 from lunar_diffusion.pair_dataset import LunarPairDataset
 
@@ -72,6 +74,98 @@ def save_prediction_grid(img_t, img_next, recon_t, recon_next, pred_next, save_p
     plt.savefig(save_path, dpi=150)
     plt.close(fig)
 
+
+def draw_crop_box(ax, state, img_h, img_w, crop_size):
+    state_batch = state.detach().cpu().view(1, -1)
+    px, py = state_xy_to_pixel(state_batch, img_h, img_w)
+
+    cx = float(px[0])
+    cy = float(py[0])
+    half = crop_size / 2.0
+
+    rect = Rectangle(
+        (cx - half, cy - half),
+        crop_size,
+        crop_size,
+        fill=False,
+        edgecolor="cyan",
+        linewidth=2.5,
+    )
+    ax.add_patch(rect)
+
+
+def save_prediction_grid_boxed(
+    img_t,
+    img_next,
+    recon_t,
+    recon_next,
+    pred_next,
+    state_t,
+    state_next,
+    save_path,
+    crop_size,
+    num_images=6,
+    title=None,
+):
+    img_t = img_t[:num_images].detach().cpu()
+    img_next = img_next[:num_images].detach().cpu()
+    recon_t = recon_t[:num_images].detach().cpu()
+    recon_next = recon_next[:num_images].detach().cpu()
+    pred_next = pred_next[:num_images].detach().cpu()
+    state_t = state_t[:num_images].detach().cpu()
+    state_next = state_next[:num_images].detach().cpu()
+
+    rows = [
+        ("real t", img_t, state_t),
+        ("recon t", recon_t, state_t),
+        ("real t+1", img_next, state_next),
+        ("recon t+1", recon_next, state_next),
+        ("pred t+1", pred_next, state_next),
+    ]
+
+    fig, axes = plt.subplots(
+        len(rows),
+        num_images + 1,
+        figsize=(2 * (num_images + 1), 2 * len(rows)),
+        gridspec_kw={"width_ratios": [0.9] + [1.0] * num_images},
+    )
+
+    for r, (label, imgs, states) in enumerate(rows):
+        label_ax = axes[r, 0]
+        label_ax.axis("off")
+        label_ax.text(
+            0.5,
+            0.5,
+            label,
+            ha="center",
+            va="center",
+            fontsize=14,
+            fontweight="bold",
+        )
+
+        for c in range(num_images):
+            ax = axes[r, c + 1]
+            ax.imshow(imgs[c].permute(1, 2, 0).clamp(0, 1))
+            ax.axis("off")
+
+            img_h = imgs.shape[2]
+            img_w = imgs.shape[3]
+            draw_crop_box(
+                ax=ax,
+                state=states[c],
+                img_h=img_h,
+                img_w=img_w,
+                crop_size=crop_size,
+            )
+
+    if title is not None:
+        fig.suptitle(title, fontsize=16, fontweight="bold")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96] if title is not None else None)
+    plt.savefig(save_path, dpi=150)
+    plt.close(fig)
+
+
 def select_state(states, state_indices):
     return states[:, state_indices]
 
@@ -93,6 +187,7 @@ def compute_losses(
     crop_weight,
     pred_crop_weight,
     crop_size,
+    crop_loss_type,
 ):
     k = len(state_indices)
 
@@ -121,25 +216,28 @@ def compute_losses(
     pred_recon_loss = F.mse_loss(pred_img_next, img_next, reduction="mean")
 
     crop_loss = 0.5 * (
-        state_guided_crop_mse(
+        state_guided_crop_loss(
             pred_images=recon_t,
             target_images=img_t,
             states=state_t,
             crop_size=crop_size,
+            loss_type=crop_loss_type,
         )
-        + state_guided_crop_mse(
+        + state_guided_crop_loss(
             pred_images=recon_next,
             target_images=img_next,
             states=state_next,
             crop_size=crop_size,
+            loss_type=crop_loss_type,
         )
     )
 
-    pred_crop_loss = state_guided_crop_mse(
+    pred_crop_loss = state_guided_crop_loss(
         pred_images=pred_img_next,
         target_images=img_next,
         states=state_next,
         crop_size=crop_size,
+        loss_type=crop_loss_type,
     )
 
     # PIWM P1: physical latent dims match physical state.
@@ -222,6 +320,7 @@ def run_epoch(
     crop_weight,
     pred_crop_weight,
     crop_size,
+    crop_loss_type,
     train=True,
 ):
     model.train() if train else model.eval()
@@ -258,6 +357,7 @@ def run_epoch(
                 crop_weight=crop_weight,
                 pred_crop_weight=pred_crop_weight,
                 crop_size=crop_size,
+                crop_loss_type=crop_loss_type,
             )
 
             loss = metrics["loss"]
@@ -299,6 +399,7 @@ def main():
     parser.add_argument("--crop_weight", type=float, default=1.0)
     parser.add_argument("--pred_crop_weight", type=float, default=0.5)
     parser.add_argument("--crop_size", type=int, default=32)
+    parser.add_argument("--crop_loss_type", choices=["mse", "l1", "mse_l1"], default="mse")
 
     parser.add_argument(
         "--state_indices",
@@ -335,6 +436,7 @@ def main():
     print("crop_weight:", args.crop_weight)
     print("pred_crop_weight:", args.pred_crop_weight)
     print("crop_size:", args.crop_size)
+    print("crop_loss_type:", args.crop_loss_type)
     print("patience:", args.patience)
     print("seed:", args.seed)
 
@@ -384,6 +486,8 @@ def main():
 
     best_test_loss = float("inf")
     best_epoch = None
+    best_grid_path = None
+    best_viz_payload = None
     epochs_without_improvement = 0
     history = []
 
@@ -405,6 +509,7 @@ def main():
             crop_weight=args.crop_weight,
             pred_crop_weight=args.pred_crop_weight,
             crop_size=args.crop_size,
+            crop_loss_type=args.crop_loss_type,
             train=True,
         )
 
@@ -423,6 +528,7 @@ def main():
             crop_weight=args.crop_weight,
             pred_crop_weight=args.pred_crop_weight,
             crop_size=args.crop_size,
+            crop_loss_type=args.crop_loss_type,
             train=False,
         )
 
@@ -464,6 +570,7 @@ def main():
                 crop_weight=args.crop_weight,
                 pred_crop_weight=args.pred_crop_weight,
                 crop_size=args.crop_size,
+                crop_loss_type=args.crop_loss_type,
             )
 
         grid_path = os.path.join(args.output_dir, f"pred_grid_epoch_{epoch:03d}.png")
@@ -512,6 +619,17 @@ def main():
                 },
                 best_path,
             )
+            best_grid_path = grid_path
+            best_viz_payload = {
+                "img_t": img_t.detach().cpu(),
+                "img_next": img_next.detach().cpu(),
+                "state_t": state_t.detach().cpu(),
+                "state_next": state_next.detach().cpu(),
+                "recon_t": outputs["recon_t"].detach().cpu(),
+                "recon_next": outputs["recon_next"].detach().cpu(),
+                "pred_img_next": outputs["pred_img_next"].detach().cpu(),
+                "epoch": epoch,
+            }
             print("saved best:", best_path)
         else:
             epochs_without_improvement += 1
@@ -526,6 +644,28 @@ def main():
         if args.patience > 0 and epochs_without_improvement >= args.patience:
             print(f"early stopping at epoch {epoch}")
             break
+
+    if best_grid_path is not None and os.path.exists(best_grid_path):
+        best_grid_copy_path = os.path.join(args.output_dir, "pred_grid_best.png")
+        shutil.copyfile(best_grid_path, best_grid_copy_path)
+        print("saved best grid:", best_grid_copy_path)
+
+    if best_viz_payload is not None:
+        best_boxed_path = os.path.join(args.output_dir, "pred_grid_best_boxed.png")
+        save_prediction_grid_boxed(
+            img_t=best_viz_payload["img_t"],
+            img_next=best_viz_payload["img_next"],
+            recon_t=best_viz_payload["recon_t"],
+            recon_next=best_viz_payload["recon_next"],
+            pred_next=best_viz_payload["pred_img_next"],
+            state_t=best_viz_payload["state_t"],
+            state_next=best_viz_payload["state_next"],
+            save_path=best_boxed_path,
+            crop_size=args.crop_size,
+            num_images=6,
+            title=f"PIWM P4-lite crop predictions — best epoch {best_viz_payload['epoch']}",
+        )
+        print("saved boxed best grid:", best_boxed_path)
 
     elapsed = time.time() - start_time
 

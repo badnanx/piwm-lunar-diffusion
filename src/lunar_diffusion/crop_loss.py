@@ -87,15 +87,69 @@ def crop_around_state(
     return crops
 
 
+def crop_reconstruction_loss(
+    pred_crop: torch.Tensor,
+    target_crop: torch.Tensor,
+    loss_type: str = "mse",
+):
+    """
+    Reconstruction loss for a cropped image region.
+
+    loss_type options:
+        mse:
+            Standard mean squared error. Stable, but can encourage blur.
+
+        l1:
+            Mean absolute error. Often less blurry than MSE.
+
+        mse_l1:
+            Combination of MSE and L1. Keeps MSE stability while adding
+            sharper L1 pressure.
+    """
+    if loss_type == "mse":
+        return F.mse_loss(pred_crop, target_crop, reduction="mean")
+
+    if loss_type == "l1":
+        return F.l1_loss(pred_crop, target_crop, reduction="mean")
+
+    if loss_type == "mse_l1":
+        mse = F.mse_loss(pred_crop, target_crop, reduction="mean")
+        l1 = F.l1_loss(pred_crop, target_crop, reduction="mean")
+        return mse + l1
+
+    raise ValueError(f"Unknown crop loss type: {loss_type}")
+
+
+def state_guided_crop_loss(
+    pred_images: torch.Tensor,
+    target_images: torch.Tensor,
+    states: torch.Tensor,
+    crop_size: int = 32,
+    loss_type: str = "mse",
+):
+    """
+    Reconstruction loss on a crop centered around the true lander x,y position.
+    """
+    pred_crop = crop_around_state(pred_images, states, crop_size=crop_size)
+    target_crop = crop_around_state(target_images, states, crop_size=crop_size)
+    return crop_reconstruction_loss(
+        pred_crop=pred_crop,
+        target_crop=target_crop,
+        loss_type=loss_type,
+    )
+
+
+# Backward-compatible name used by older scripts.
 def state_guided_crop_mse(
     pred_images: torch.Tensor,
     target_images: torch.Tensor,
     states: torch.Tensor,
     crop_size: int = 32,
 ):
-    """
-    MSE on a crop centered around the true lander x,y position.
-    """
-    pred_crop = crop_around_state(pred_images, states, crop_size=crop_size)
-    target_crop = crop_around_state(target_images, states, crop_size=crop_size)
-    return F.mse_loss(pred_crop, target_crop, reduction="mean")
+    return state_guided_crop_loss(
+        pred_images=pred_images,
+        target_images=target_images,
+        states=states,
+        crop_size=crop_size,
+        loss_type="mse",
+    )

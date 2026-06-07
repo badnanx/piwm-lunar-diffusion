@@ -171,3 +171,45 @@ Compare:
   pred_crop_loss
   p1/dynamics RMSE
   per-dimension RMSE
+
+## 9. P4-lite crop experiments
+
+We implemented a state-guided crop loss around the Lunar Lander x,y position.
+
+P4-lite v1:
+  crop_size = 32
+  crop_weight = 1.0
+  pred_crop_weight = 0.5
+  crop_loss_type = mse
+
+Observation:
+  lander appears inside the crop region
+  reconstructions/predictions show the lander as a blurry blob
+  flags are visible
+  terrain remains soft
+
+Interpretation:
+  crop location is correct
+  crop loss helps focus attention, but does not solve decoder blur or tiny-object detail
+
+P4-lite v2:
+  crop_size = 24
+  crop_weight = 3.0
+  pred_crop_weight = 1.0
+  crop_loss_type = mse_l1
+
+Observation:
+  visual quality got worse
+  lander and flags disappeared in non-real rows
+  crop box still correctly contained the real lander
+
+Interpretation:
+  crop location is not the bottleneck
+  heavier crop + MSE/L1 dominated the objective without producing sharper object detail
+  the model still prefers smoothing/averaging inside the crop
+  this suggests the bottleneck is decoder/object representation, not crop placement
+
+Conclusion:
+  Keep P4-lite v1 as the better crop baseline.
+  Do not continue increasing crop weight or adding L1 blindly.
+  Next promising direction is extrinsic/VQ-VAE or true object/mask-based partitioning.

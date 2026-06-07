@@ -113,10 +113,18 @@ def analyze_file(npz_path, state_key, purple_threshold):
         detected = mask_center(mask)
         true_px, true_py = state_center_pixels(state, img_h, img_w)
 
+        visible_expected = (
+            true_px >= 0
+            and true_px < img_w
+            and true_py >= 0
+            and true_py < img_h
+        )
+
         if detected is None:
             rows.append(
                 {
                     "detected": False,
+                    "visible_expected": bool(visible_expected),
                     "pixel_error": None,
                     "det_x": None,
                     "det_y": None,
@@ -131,6 +139,7 @@ def analyze_file(npz_path, state_key, purple_threshold):
             rows.append(
                 {
                     "detected": True,
+                    "visible_expected": bool(visible_expected),
                     "pixel_error": pixel_error,
                     "det_x": det_x,
                     "det_y": det_y,
@@ -190,19 +199,39 @@ def save_overlay_grid(obs, states, rows, output_path, purple_threshold, max_imag
 
 def summarize(all_rows):
     n = len(all_rows)
-    detected_rows = [r for r in all_rows if r["detected"]]
-    detection_rate = len(detected_rows) / max(n, 1)
 
-    errors = [r["pixel_error"] for r in detected_rows if r["pixel_error"] is not None]
+    detected_rows = [r for r in all_rows if r["detected"]]
+    visible_rows = [r for r in all_rows if r.get("visible_expected", True)]
+    offscreen_rows = [r for r in all_rows if not r.get("visible_expected", True)]
+
+    visible_detected_rows = [r for r in visible_rows if r["detected"]]
+
+    detection_rate_all = len(detected_rows) / max(n, 1)
+    detection_rate_visible = len(visible_detected_rows) / max(len(visible_rows), 1)
+
+    errors_all_detected = [
+        r["pixel_error"] for r in detected_rows if r["pixel_error"] is not None
+    ]
+    errors_visible_detected = [
+        r["pixel_error"] for r in visible_detected_rows if r["pixel_error"] is not None
+    ]
+
     mask_pixels = [r["mask_pixels"] for r in all_rows]
 
     summary = {
         "num_frames": n,
         "num_detected": len(detected_rows),
-        "detection_rate": detection_rate,
-        "mean_pixel_error_detected": float(np.mean(errors)) if errors else None,
-        "median_pixel_error_detected": float(np.median(errors)) if errors else None,
-        "p90_pixel_error_detected": float(np.percentile(errors, 90)) if errors else None,
+        "num_visible_expected": len(visible_rows),
+        "num_offscreen_expected": len(offscreen_rows),
+        "num_visible_detected": len(visible_detected_rows),
+        "detection_rate_all": detection_rate_all,
+        "detection_rate_visible_expected": detection_rate_visible,
+        "mean_pixel_error_all_detected": float(np.mean(errors_all_detected)) if errors_all_detected else None,
+        "median_pixel_error_all_detected": float(np.median(errors_all_detected)) if errors_all_detected else None,
+        "p90_pixel_error_all_detected": float(np.percentile(errors_all_detected, 90)) if errors_all_detected else None,
+        "mean_pixel_error_visible_detected": float(np.mean(errors_visible_detected)) if errors_visible_detected else None,
+        "median_pixel_error_visible_detected": float(np.median(errors_visible_detected)) if errors_visible_detected else None,
+        "p90_pixel_error_visible_detected": float(np.percentile(errors_visible_detected, 90)) if errors_visible_detected else None,
         "mean_mask_pixels": float(np.mean(mask_pixels)) if mask_pixels else None,
         "median_mask_pixels": float(np.median(mask_pixels)) if mask_pixels else None,
     }
@@ -285,10 +314,14 @@ def main():
     print("---------------------------")
     print("num_frames:", summary["num_frames"])
     print("num_detected:", summary["num_detected"])
-    print("detection_rate:", f"{summary['detection_rate']:.3f}")
-    print("mean_pixel_error_detected:", summary["mean_pixel_error_detected"])
-    print("median_pixel_error_detected:", summary["median_pixel_error_detected"])
-    print("p90_pixel_error_detected:", summary["p90_pixel_error_detected"])
+    print("num_visible_expected:", summary["num_visible_expected"])
+    print("num_offscreen_expected:", summary["num_offscreen_expected"])
+    print("num_visible_detected:", summary["num_visible_detected"])
+    print("detection_rate_all:", f"{summary['detection_rate_all']:.3f}")
+    print("detection_rate_visible_expected:", f"{summary['detection_rate_visible_expected']:.3f}")
+    print("mean_pixel_error_visible_detected:", summary["mean_pixel_error_visible_detected"])
+    print("median_pixel_error_visible_detected:", summary["median_pixel_error_visible_detected"])
+    print("p90_pixel_error_visible_detected:", summary["p90_pixel_error_visible_detected"])
     print("mean_mask_pixels:", summary["mean_mask_pixels"])
     print("saved:", summary_path)
 

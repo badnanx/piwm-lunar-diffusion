@@ -224,3 +224,49 @@ eval-correction-debug:
 summarize-piwm-v1:
 >PYTHONPATH=$(PYTHONPATH) python scripts/summarize_piwm_eval.py \
 >  --metrics outputs/piwm_pair_physstrong_v1/eval_metrics.json
+
+.PHONY: debug-pair-crop medium-pair-crop
+
+debug-pair-crop:
+>PYTHONPATH=$(PYTHONPATH) python scripts/train_piwm_pair_crop.py \
+>  --train_dir $(TRAIN_DIR) \
+>  --test_dir $(TEST_DIR) \
+>  --output_dir outputs/piwm_pair_crop_debug \
+>  --state_key states \
+>  --latent_dim 64 \
+>  --batch_size 16 \
+>  --epochs 1 \
+>  --max_train_files 10 \
+>  --max_test_files 5 \
+>  --state_indices 0 1 2 3 4 5 \
+>  --p1_weight 1.0 \
+>  --p2_weight 0.5 \
+>  --dynamics_weight 1.0 \
+>  --pred_recon_weight 0.1 \
+>  --crop_weight 1.0 \
+>  --pred_crop_weight 0.5 \
+>  --crop_size 32 \
+>  --patience 2 \
+>  --seed 42
+
+medium-pair-crop:
+>PYTHONPATH=$(PYTHONPATH) python scripts/train_piwm_pair_crop.py \
+>  --train_dir $(TRAIN_DIR) \
+>  --test_dir $(TEST_DIR) \
+>  --output_dir outputs/piwm_pair_crop_medium \
+>  --state_key states \
+>  --latent_dim 64 \
+>  --batch_size 32 \
+>  --epochs 8 \
+>  --max_train_files 75 \
+>  --max_test_files 15 \
+>  --state_indices 0 1 2 3 4 5 \
+>  --p1_weight 1.0 \
+>  --p2_weight 0.5 \
+>  --dynamics_weight 1.0 \
+>  --pred_recon_weight 0.1 \
+>  --crop_weight 1.0 \
+>  --pred_crop_weight 0.5 \
+>  --crop_size 32 \
+>  --patience 4 \
+>  --seed 42
